@@ -17,16 +17,9 @@ tool_schema = types.Tool(
                 "Wykonuje zapytanie SELECT do BigQuery w celu uzyskania danych z tabeli "
                 "analytics_435783047.events_raw."
             ),
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={
-                    "sql_query": types.Schema(
-                        type=types.Type.STRING,
-                        description="Poprawne zapytanie SQL typu SELECT."
-                    )
-                },
-                required=["sql_query"],
-            ),
+            parameters=types.StructType([
+                types.StructField("sql_query", types.Type.STRING, description="Poprawne zapytanie SQL")
+            ]),
         )
     ]
 )
