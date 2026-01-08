@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Dict, List
 
-from google.generativeai import client, types
+from google import genai
+from google.generativeai import types
 
 from src.config import GENERATION_CONFIG, LOCATION, MODEL_ID, PROJECT_ID, SYSTEM_INSTRUCTION
 from src.tools import BigQueryTool, tool_schema
@@ -16,7 +17,7 @@ class ADKAgent:
 
     def __init__(self) -> None:
         model_path = f"projects/{PROJECT_ID}/locations/{LOCATION}/models/{MODEL_ID}"
-        self.model = client.GenerativeModel(model_name=model_path)
+        self.model = genai.GenerativeModel(model_name=model_path)
         self.bq_tool = BigQueryTool()
 
     def _to_contents(self, history: List[Dict[str, str]]) -> List[types.Content]:
