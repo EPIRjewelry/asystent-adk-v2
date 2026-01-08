@@ -9,12 +9,14 @@ LOCATION = "us-central1"
 DATASET_ID = "analytics_435783047"
 
 # --- MODEL: GEMINI ---
-MODEL_ID = "gemini-1.5-pro-preview-0409"
+MODEL_ID = "gemini-3-pro-preview"
 
 # Parametry generacji
 GENERATION_CONFIG: dict = {
     "temperature": 0.0,
     "max_output_tokens": 8192,
+    "thinking_level": "HIGH",
+    "media_resolution": "low",
 }
 
 # --- INSTRUKCJA SYSTEMOWA (Prompt) ---
