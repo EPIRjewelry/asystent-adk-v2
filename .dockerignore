@@ -1,0 +1,13 @@
+# Ignoruj pliki i katalogi, które nie są potrzebne w obrazie
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+.env
+.git/
+.gitignore
+.DS_Store
+*.log
+*.md
+/tests/
