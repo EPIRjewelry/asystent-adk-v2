@@ -5,7 +5,7 @@ $PROJECT_ID = "epir-adk-agent-v2-48a86e6f"
 $REGION = "europe-west1"
 $SERVICE_NAME = "asystent-adk-v2"
 $IMAGE_NAME = "gcr.io/$PROJECT_ID/$SERVICE_NAME"
-$SERVICE_ACCOUNT = "sa-adk-agent@$PROJECT_ID.iam.gserviceaccount.com"
+$SERVICE_ACCOUNT = "adk-vertex-agent@$PROJECT_ID.iam.gserviceaccount.com"
 
 Write-Host "--- ROZPOCZYNANIE DEPLOYMENTU ADK AGENT V2 ---" -ForegroundColor Cyan
 Write-Host "Projekt: $PROJECT_ID"

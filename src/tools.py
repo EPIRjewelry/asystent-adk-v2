@@ -1,108 +1,110 @@
-"""Narzędzia wykorzystywane przez agenta ADK."""
+"""Narzędzia wykorzystywane przez agenta ADK (Gemini 3.0, BuiltInPlanner)."""
 
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import Any, Dict, List
 
-from google.api_core.exceptions import GoogleAPICallError
 from google.cloud import bigquery
 from google.genai import types
+from google.adk.agents import Agent
+from google.adk.planners import BuiltInPlanner
+
+from src.config import PROJECT_ID, LOCATION, DATASET_ID, BQ_LOCATION
 from src.utils import logger
 
 
-# --- DEFINICJA NARZĘDZIA (SCHEMA) ---
-tool_schema = types.Tool(
-    function_declarations=[
-        types.FunctionDeclaration(
-            name="execute_sql",
-            description="Wykonywanie zapytań SQL (BigQuery) w trybie READ-ONLY. Zwraca wyniki lub komunikat błędu.",
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={
-                    "sql_query": types.Schema(
-                        type=types.Type.STRING,
-                        description="Poprawne zapytanie SQL. Musi używać pełnych nazw tabel (projekt.dataset.tabela).",
-                    )
-                },
-                required=["sql_query"],
-            ),
-        )
-    ]
-)
+# Inicjalizacja BigQuery klienta z obsługą błędu krytycznego
+try:
+    bq_client = bigquery.Client(project=PROJECT_ID, location=BQ_LOCATION)
+except Exception as exc:  # noqa: BLE001
+    logger.error("Critical: Failed to connect to BigQuery: %s", exc)
+    bq_client = None
 
 
-class BigQueryTool:
-    """Narzędzie do bezpiecznego wykonywania zapytań SELECT w BigQuery (z logowaniem i walidacją)."""
+# --- NARZĘDZIA (TOOLS) ---
 
-    def __init__(self) -> None:
-        project_id = os.getenv("GOOGLE_CLOUD_PROJECT", "epir-adk-agent-v2-48a86e6f")
-        self.client = bigquery.Client(project=project_id)
+def run_sql_query(query: str) -> Dict[str, Any]:
+    """
+    Wykonuje zapytanie SQL w BigQuery (Standard SQL) w trybie READ-ONLY.
+    Zwraca maksymalnie 50 wierszy wyników.
+    """
+    if not bq_client:
+        return {"error": "BigQuery client is not initialized."}
 
-    def execute(self, sql_query: str) -> str:
-        """Wykonuje zapytanie SQL i zwraca wynik w formacie tekstowym lub komunikat o błędzie."""
+    # 1. WARSTWA BEZPIECZEŃSTWA (Client-side Guardrail)
+    forbidden_keywords = ["DELETE", "DROP", "UPDATE", "INSERT", "ALTER", "TRUNCATE", "MERGE", "GRANT", "CREATE"]
+    normalized_query = query.upper().replace("\n", " ")
 
-        clean_query = sql_query.replace("```sql", "").replace("```", "").strip()
-        upper_sql = clean_query.upper()
+    if any(keyword in normalized_query.split() for keyword in forbidden_keywords):
+        logger.warning("Zablokowano niebezpieczne zapytanie: %s", query)
+        return {"error": "SAFETY VIOLATION: Operacje modyfikacji danych (DML/DDL) są zablokowane na poziomie agenta."}
 
-        logger.info("BQ execute request: len=%d, preview=%s", len(clean_query), clean_query[:200])
+    try:
+        # 2. DRY RUN (Opcjonalne sprawdzenie kosztów/składni przed wykonaniem)
+        job_config = bigquery.QueryJobConfig(dry_run=True, use_query_cache=True)
+        bq_client.query(query, job_config=job_config)
 
-        forbidden_keywords = ["DROP", "DELETE", "UPDATE", "INSERT", "ALTER", "TRUNCATE"]
-        if any(keyword in upper_sql for keyword in forbidden_keywords):
-            logger.warning("Blokowane zapytanie z zabronionym słowem: %s", upper_sql[:120])
-            return "BŁĄD BEZPIECZEŃSTWA: Wykryto próbę modyfikacji danych. Dozwolony jest tylko SELECT."
+        # 3. WŁAŚCIWE WYKONANIE
+        query_job = bq_client.query(query)
 
-        if not (upper_sql.startswith("SELECT") or upper_sql.startswith("WITH")):
-            logger.warning("Nieprawidłowy początek zapytania: %s", upper_sql[:60])
-            return "Błąd: Dozwolone są tylko zapytania rozpoczynające się od SELECT lub WITH (CTE)."
+        results: List[Dict[str, Any]] = [dict(row) for row in query_job]
+        row_count = len(results)
 
-        # --- WALIDACJA DRY RUN ---
-        try:
-            job_config = bigquery.QueryJobConfig(dry_run=True, use_query_cache=False)
-            self.client.query(clean_query, job_config=job_config)
-        except Exception as e:
-            logger.warning("Dry run failed: %s", e)
-            return f"BŁĄD SKŁADNI SQL (Dry Run): {e}"
-
-        try:
-            query_job = self.client.query(clean_query)
-            results = query_job.result()
-
-            if not results.schema:
-                return "Zapytanie wykonane poprawnie, ale nie zwróciło schematu (pusty wynik?)."
-
-            headers = [field.name for field in results.schema]
-            rows = []
-            for i, row in enumerate(results):
-                if i >= 20:
-                    break
-                row_values = [str(val) if val is not None else "NULL" for val in row]
-                rows.append(" | ".join(row_values))
-
-            if not rows:
-                logger.info("Zapytanie zwróciło pusty zestaw danych.")
-                return f"Schemat: {', '.join(headers)}\n(Brak danych spełniających kryteria)"
-
-            output = f"Kolumny: {', '.join(headers)}\n"
-            output += "\n".join(rows)
-            return output
-
-        except (GoogleAPICallError, Exception) as e:  # noqa: BLE001
-            logger.error("Błąd podczas wykonania zapytania BigQuery: %s", e, exc_info=True)
-            error_msg = str(e)
-            if "isinstance" in error_msg and "must be a type" in error_msg:
-                return (
-                    "BŁĄD WEWNĘTRZNY NARZĘDZIA (Critical TypeError): "
-                    f"{error_msg}. Narzędzie jest uszkodzone. Przejdź do procedury awaryjnej: poproś użytkownika o schemat."
-                )
-            return f"BŁĄD WYKONANIA SQL: {error_msg}"
+        return {
+            "status": "success",
+            "rows_count": row_count,
+            "data": results[:50],
+            "meta": "Wynik ograniczony do pierwszych 50 wierszy." if row_count > 50 else "Pełny wynik.",
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "error", "message": f"BigQuery Error: {exc}"}
 
 
-# Instancja narzędzia
-_bq_tool = BigQueryTool()
+def get_table_schema(table_name: str) -> Dict[str, Any]:
+    """
+    Pobiera schemat tabeli, aby agent znał nazwy kolumn.
+    Obsługuje skrócone nazwy (np. 'events_raw') jak i pełne ID.
+    """
+    if not bq_client:
+        return {"error": "No BQ Client"}
+
+    full_table_id = table_name if "." in table_name else f"{PROJECT_ID}.{DATASET_ID}.{table_name}"
+
+    try:
+        table = bq_client.get_table(full_table_id)
+        schema = [{"name": field.name, "type": field.field_type} for field in table.schema]
+        return {"status": "success", "schema": schema}
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "error", "message": f"Schema fetch error: {exc}"}
 
 
-def execute_sql(sql_query: str) -> str:
-    """Wykonuje zapytanie SELECT do BigQuery w trybie READ-ONLY."""
-    return _bq_tool.execute(sql_query)
+# --- DEFINICJA AGENTA (Zgodna z Gemini 3) ---
+
+RESTORED_SYSTEM_PROMPT = """
+Jesteś Starszym Analitykiem Danych w EPIR Art Jewellery.
+Twoim celem jest odpowiadanie na pytania biznesowe poprzez dane z BigQuery.
+
+ZASADY:
+1. Używaj `get_table_schema` przed napisaniem SQL, aby znać nazwy kolumn.
+2. Dataset: `analytics_435783047`. Główna tabela: `events_raw`.
+3. Pisz poprawny BigQuery Standard SQL.
+4. Jeśli zapytanie zwróci błąd, popraw je i spróbuj ponownie (Self-Correction).
+5. Odpowiadaj zwięźle, w języku polskim.
+"""
+
+
+def create_agent() -> Agent:
+    """Tworzy instancję agenta z wbudowanym plannerem (Gemini 3.x)."""
+
+    return Agent(
+        model="gemini-3-flash-preview",
+        name="analyst_v2_restored",
+        location=LOCATION,
+        instruction=RESTORED_SYSTEM_PROMPT,
+        tools=[run_sql_query, get_table_schema],
+        planner=BuiltInPlanner(
+            thinking_config=types.ThinkingConfig(include_thoughts=True)
+        ),
+    )
 

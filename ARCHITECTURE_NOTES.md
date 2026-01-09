@@ -1,61 +1,41 @@
 # Enterprise Architecture Notes (Vertex AI, Gemini, RAG, Integracje)
 
 **Ostatnia aktualizacja:** 2026-01-09  
-**Autor:** Krzysztof (Senior Cloud Architect & Technical Auditor)
+**Status:** Zgodność z Gemini 3.0 i ADK (Agent Development Kit)
 
 ---
 
-## 1. Werdykt Ogólny
-Vertex AI to solidna, managed platforma do AI/ML i agentów (Gemini), ale:
-- W hybrydzie (np. Cloudflare + Google Cloud) pojawia się latency (100–500ms).
-- Brak natywnych integracji z Shopify – wymaga custom connectors.
-- Preview features (np. Gemini 3 Pro Preview, grounding z Google Maps) są niestabilne.
-- Quoty i limity (Pub/Sub, BigQuery, RAG Engine) mogą być wąskim gardłem przy dużym ruchu.
+## 1. Architektura Gemini 3.0: Paradygmat "Thinking Models"
 
-## 2. Knowledge Base & RAG
-- Vertex AI RAG Engine jest niezbędny do głębokiej wiedzy domenowej (np. Stylist Agent).
-- Integracja z Cloudflare Workers tylko przez API (latency!).
-- Wsparcie dla: Cloud Storage, BigQuery, Google Drive, Slack, Jira.
-- Grounding z Google Search/Maps – experimental, US-only.
-- Quoty: np. 10k docs/dzień w RAG Engine.
+### A. BuiltInPlanner vs Manual Loop
+- **Problem V2 (Manualna Pętla):** Ręczne sterowanie pętlą `while response.function_calls` gubi `thought_signature` (zaszyfrowany token stanu myślenia) w metadanych odpowiedzi. Powoduje to "context collapse" i utratę inteligencji modelu w kolejnych turach.
+- **Rozwiązanie (BuiltInPlanner):** Natywny komponent Google ADK. Automatycznie zarządza `thought_signature`, utrzymując spójność procesu myślowego ("System 2 Thinking").
 
-## 3. Data Bridge & Integracje
-- Pub/Sub → BigQuery to viable pattern, ale nieoptymalny dla Shopify Pixels.
-- BigQuery = offline store w Feature Store.
-- Shopify: integracja przez Pub/Sub, Vertex AI Search for Commerce.
-- Quoty: np. 10k msg/sek w Pub/Sub.
-- Auth: Service Accounts wymagają rotacji i nadzoru.
+### B. Inżynieria Promptu (Zasada "Mniej znaczy Więcej")
+- **Koniec z Chain of Thought (CoT):** Gemini 3.0 wykonuje CoT natywnie. Instrukcje typu "Think step by step" kolidują z wewnętrznym procesem i obniżają jakość.
+- **Persona & Constraints:** Najwyższą skuteczność osiągają krótkie, konkretne prompty definiujące Rolę, Cel i twarde Ograniczenia (np. zakaz DML).
+- **Formaty:** Używaj `response_schema` zamiast instrukcji formatowania tekstu w prompcie.
 
-## 4. Model Capabilities (Gemini 3.0)
-- Gemini 3 Pro/Flash przewyższa Llama 70b w orchestrator roli (function calling, multimodal reasoning, 1M token context).
-- Wysokie koszty (usage-based pricing).
-- Knowledge cutoff: styczeń 2025 – wymaga RAG dla aktualnych danych.
-- Brak tuningu – tylko RAG i prompt engineering.
+## 2. Bezpieczeństwo i Wydajność (Data Guardrails)
 
-## 5. Manager Agent Feasibility
-- Vertex AI Agent Builder umożliwia autonomiczne zarządzanie (np. query BigQuery, adjust Ads), ale wymaga IAM i nadzoru.
-- Integracje z Ads/Analytics pośrednio przez connectors.
-- Security: least-privilege, VPC-SC, auto-monitoring agentów.
-- Brak full autonomy – guardrails mogą blokować zmiany.
+- **Wzorzec "Client-Side Guardrail":** Funkcja `run_sql_query` implementuje filtr słów kluczowych (DROP, DELETE) bezpośrednio w Pythonie.
+- **Fail Fast:** Blokada niebezpiecznego zapytania lokalnie (~10ms) jest skuteczniejsza dla modelu niż czekanie na błąd IAM z BigQuery (~1500ms). Szybka informacja zwrotna pozwala modelowi na natychmiastową autokorektę.
+- **IAM:** Mimo filtrów lokalnych, Service Account musi posiadać uprawnienia `BigQuery Data Viewer` (Least Privilege).
 
-## 6. Best Practices & Ryzyka
-- Używaj RAG Engine do ingestion, testuj latency end-to-end.
-- Monitoruj usage-based pricing (może przekroczyć $1k/miesiąc przy dużej skali).
-- Unikaj top-k RAG – preferuj state-aware retrieval.
-- Preview features traktuj jako niestabilne.
-- Full Google stack = prostszy, mniej auth issues niż hybryda.
+## 3. Lokalizacja i Infrastruktura (Global Config)
+
+- **Regiony:** Modele Gemini 3.x są hostowane w lokalizacji `global` (lub `us-central1` w zależności od tieru).
+- **BigQuery:** Dane analityczne (`analytics_435783047`) pozostają w regionie specyficznym dla datasetu (np. `us-central1`), co wymaga jasnego rozdzielenia lokalizacji klienta genAI od lokalizacji klienta BQ.
+
+## 4. Podsumowanie Wzorców "Złotej Ery" (V1) vs V2
+
+| Cecha | V1 (Sukces) | V2 (Over-engineered) | Rekomendacja 2026 |
+| :--- | :--- | :--- | :--- |
+| **Pętla** | BuiltInPlanner | Custom Python While | **BuiltInPlanner** |
+| **Prompt** | 4-5 linijek (Rola/Cel) | Mega-prompt (CoT/JSON) | **Minimalistyczny Prompt** |
+| **Safety** | Regex/Python Check | Wyłącznie IAM Error | **Python Guardrail + IAM** |
+| **Context** | Thought Signature (Auto) | Text History Only | **Thought Signature (ADK)** |
 
 ---
 
-**Rekomendacja:**  
-Vertex AI jest wykonalny jako core dla Jubiler.AI, ale wymaga prototypowania, testów latency/security i custom integracji (szczególnie z Shopify). Alternatywnie, rozważ full Google stack dla prostoty i bezpieczeństwa.
-
----
-
-**Notatka SUPERWAŻNA:**  
-- Dla Gemini 3 Pro Preview: zawsze używaj ChatSession, przekazuj thought signature, nie używaj thinking_budget, trzymaj się oficjalnych parametrów.  
-- Brak tych zasad = błąd 400 lub utrata kontekstu!
-
----
-
-Ta sekcja powinna być aktualizowana przy każdej większej zmianie architektury lub platformy chmurowej.
+**Konkluzja:** Powrót do minimalistycznej architektury V1, ale z wykorzystaniem nowoczesnego SDK i komponentów ADK, zapewnia najlepszy balans między bezpieczeństwem, szybkością a "inteligencją" agenta.
