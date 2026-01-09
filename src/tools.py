@@ -20,7 +20,7 @@ genai_client = Client(vertexai=True, project=PROJECT_ID, location=LOCATION)
 
 
 # --- CACHE KONTEKSTU (Optymalizacja Kosztów) ---
-CACHE_NAME = "adk_schema_cache_v1"
+CACHE_NAME = "adk_schema_cache_v2"
 cached_content = None
 
 def get_or_create_cache():
