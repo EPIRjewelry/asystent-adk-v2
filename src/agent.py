@@ -45,25 +45,34 @@ class ADKAgent:
 
     @staticmethod
     def _extract_thoughts(result: Any) -> str:
-        """Próbuje wydobyć ślad myślowy z różnych możliwych pól wyniku."""
+        """Próbuje wydobyć ślad myślowy z różnych możliwych pól wyniku (priorytet na strukturalne pola ADK/Gemini 3)."""
 
-        candidate_fields = [
-            "thoughts",
-            "thinking_trace",
-            "thinking",
-            "thought",
-        ]
+        # Priorytet 1: Strukturalne pola ADK/Gemini 3 (np. response.parts z thought)
+        if hasattr(result, 'parts'):
+            for part in result.parts:
+                if hasattr(part, 'thought') and part.thought:
+                    return str(part.thought)
 
-        for field in candidate_fields:
+        # Priorytet 2: Dedykowane pola ADK
+        adk_fields = ["thoughts", "thinking_trace", "thinking", "thought"]
+        for field in adk_fields:
             if hasattr(result, field):
                 value = getattr(result, field)
                 if value:
                     return str(value)
 
+        # Priorytet 3: Dict fallback
         if isinstance(result, dict):
-            for key in candidate_fields:
+            for key in adk_fields:
                 if key in result and result[key]:
                     return str(result[key])
+
+        # Priorytet 4: Regex na tekście (legacy, dla starszych wersji)
+        if hasattr(result, 'text'):
+            import re
+            match = re.search(r"<thinking_trace>(.*?)</thinking_trace>", result.text, re.DOTALL)
+            if match:
+                return match.group(1).strip()
 
         return ""
 

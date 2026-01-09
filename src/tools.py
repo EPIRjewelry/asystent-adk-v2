@@ -6,7 +6,7 @@ import os
 from typing import Any, Dict, List
 
 from google.cloud import bigquery
-from google.genai import types
+from google.genai import types, Client
 from google.adk.agents import Agent
 from google.adk.planners import BuiltInPlanner
 
@@ -14,12 +14,57 @@ from src.config import PROJECT_ID, LOCATION, DATASET_ID, BQ_LOCATION
 from src.utils import logger
 
 
-# Inicjalizacja BigQuery klienta z obsługą błędu krytycznego
-try:
-    bq_client = bigquery.Client(project=PROJECT_ID, location=BQ_LOCATION)
-except Exception as exc:  # noqa: BLE001
-    logger.error("Critical: Failed to connect to BigQuery: %s", exc)
-    bq_client = None
+# Inicjalizacja klientów
+bq_client = bigquery.Client(project=PROJECT_ID, location=BQ_LOCATION)
+genai_client = Client(vertexai=True, project=PROJECT_ID, location=LOCATION)
+
+
+# --- CACHE KONTEKSTU (Optymalizacja Kosztów) ---
+CACHE_NAME = "adk_schema_cache_v1"
+cached_content = None
+
+def get_or_create_cache():
+    """Tworzy lub pobiera istniejący cache kontekstu dla schematu i promptu."""
+    global cached_content
+    if cached_content is None:
+        try:
+            # Próba pobrania istniejącego cache
+            cached_content = genai_client.caches.get(name=CACHE_NAME)
+            logger.info("Użyto istniejącego cache kontekstu: %s", CACHE_NAME)
+        except Exception:
+            # Jeśli nie istnieje, utwórz nowy
+            schema_content = f"""
+            Tabela: `analytics_435783047.events_*` (Partycjonowana po dacie: _TABLE_SUFFIX = 'YYYYMMDD')
+            Kluczowe kolumny:
+            - event_date (STRING, np. "20240101")
+            - event_timestamp (INTEGER)
+            - event_name (STRING, np. "session_start", "page_view", "purchase")
+            - event_params (RECORD REPEATED) -> key (STRING), value (RECORD: string_value, int_value, double_value)
+            - user_pseudo_id (STRING)
+            - geo (RECORD) -> country, city
+            - item (RECORD REPEATED) -> item_id, item_name
+            """
+            prompt_content = f"""
+            Jesteś Starszym Analitykiem Danych w EPIR Art Jewellery.
+            Twoim celem jest odpowiadanie na pytania biznesowe poprzez dane z BigQuery.
+
+            ZASADY:
+            1. Używaj `get_table_schema` przed napisaniem SQL, aby znać nazwy kolumn.
+            2. Dataset: `analytics_435783047`. Główna tabela: `events_raw`.
+            3. Pisz poprawny BigQuery Standard SQL.
+            4. Jeśli zapytanie zwróci błąd, popraw je i spróbuj ponownie (Self-Correction).
+            5. Odpowiadaj zwięźle, w języku polskim.
+
+            SCHEMA:
+            {schema_content}
+            """
+            cached_content = genai_client.caches.create(
+                model="gemini-3-flash-preview",
+                contents=[types.Content(parts=[types.Part(text=prompt_content)])],
+                config=types.CacheConfig(name=CACHE_NAME, ttl="3600s")  # 1 godzina TTL
+            )
+            logger.info("Utworzono nowy cache kontekstu: %s", CACHE_NAME)
+    return cached_content
 
 
 # --- NARZĘDZIA (TOOLS) ---
@@ -54,8 +99,8 @@ def run_sql_query(query: str) -> Dict[str, Any]:
         return {
             "status": "success",
             "rows_count": row_count,
-            "data": results[:50],
-            "meta": "Wynik ograniczony do pierwszych 50 wierszy." if row_count > 50 else "Pełny wynik.",
+            "data": results[:100],  # Zwiększony limit dla lepszej analizy trendów (z 50 do 100)
+            "meta": "Wynik ograniczony do pierwszych 100 wierszy." if row_count > 100 else "Pełny wynik.",
         }
     except Exception as exc:  # noqa: BLE001
         return {"status": "error", "message": f"BigQuery Error: {exc}"}
@@ -97,11 +142,14 @@ ZASADY:
 def create_agent() -> Agent:
     """Tworzy instancję agenta z wbudowanym plannerem (Gemini 3.x)."""
 
+    cache = get_or_create_cache()
+
     return Agent(
         model="gemini-3-flash-preview",
         name="analyst_v2_restored",
         location=LOCATION,
-        instruction=RESTORED_SYSTEM_PROMPT,
+        # Użyj cache zamiast instruction string dla optymalizacji kosztów
+        cached_content=cache.name,
         tools=[run_sql_query, get_table_schema],
         planner=BuiltInPlanner(
             thinking_config=types.ThinkingConfig(include_thoughts=True)
