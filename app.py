@@ -4,6 +4,7 @@ import logging
 
 import streamlit as st
 
+from src.agent import run_agent_call
 from src.tools import create_agent
 
 
@@ -57,7 +58,7 @@ if user_input := st.chat_input("Zadaj pytanie o dane..."):
         with st.spinner("Analizuję dane (Thinking Process)..."):
             try:
                 # ADK Agent zarządza kontekstem i thought_signature automatycznie
-                response = st.session_state.agent.run(user_input)
+                response = run_agent_call(st.session_state.agent, user_input)
 
                 full_response = getattr(response, "text", None) or str(response)
                 message_placeholder.markdown(full_response)

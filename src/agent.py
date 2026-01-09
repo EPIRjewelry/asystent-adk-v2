@@ -2,10 +2,98 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict, List, Optional
 
 from src.tools import create_agent
 from src.utils import logger
+
+
+def _call_sync(fn, user_input: str, history: Optional[List[Dict[str, str]]]) -> Any:
+    """Próbuje wywołać funkcję synchroniczną z opcjonalną historią.
+
+    Najpierw przekazuje history jako argument nazwany, a jeśli podpis nie pasuje
+    (TypeError), ponawia wywołanie tylko z user_input.
+    """
+
+    try:
+        return fn(user_input, history=history)
+    except TypeError:
+        return fn(user_input)
+
+
+async def _call_async(fn, user_input: str, history: Optional[List[Dict[str, str]]]) -> Any:
+    """Asynchroniczny odpowiednik _call_sync z obsługą opcjonalnej historii."""
+
+    try:
+        return await fn(user_input, history=history)
+    except TypeError:
+        return await fn(user_input)
+
+
+def _run_async_entry(fn, user_input: str, history: Optional[List[Dict[str, str]]]) -> Any:
+    """Uruchamia coroutine w bezpieczny sposób, nawet jeśli event loop już działa."""
+
+    coro = _call_async(fn, user_input, history)
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # Brak aktywnej pętli — zwykłe asyncio.run
+        return asyncio.run(coro)
+
+    # Jeśli pętla już działa (np. w środowisku notebook/GUI), użyj osobnej pętli
+    new_loop = asyncio.new_event_loop()
+    try:
+        return new_loop.run_until_complete(coro)
+    finally:
+        new_loop.close()
+
+
+def run_agent_call(agent: Any, user_input: str, history: Optional[List[Dict[str, str]]] = None) -> Any:
+    """Uniwersalne wywołanie agenta z fallbackami na różne interfejsy.
+
+    Obsługiwane metody (priorytet):
+    - run
+    - run_async
+    - __call__
+    - start
+    - generate_content
+
+    Dla metod asynchronicznych wykonywany jest wrapper synchroniczny.
+    Loguje ostrzeżenie, jeśli użyto fallbacku innego niż `run`.
+    """
+
+    attempts = []
+    if hasattr(agent, "run"):
+        attempts.append(("run", getattr(agent, "run"), False))
+    if hasattr(agent, "run_async"):
+        attempts.append(("run_async", getattr(agent, "run_async"), True))
+    if callable(agent):
+        attempts.append(("__call__", agent, asyncio.iscoroutinefunction(agent)))
+    if hasattr(agent, "start"):
+        attempts.append(("start", getattr(agent, "start"), asyncio.iscoroutinefunction(getattr(agent, "start"))))
+    if hasattr(agent, "generate_content"):
+        attempts.append(("generate_content", getattr(agent, "generate_content"), asyncio.iscoroutinefunction(getattr(agent, "generate_content"))))
+
+    last_error: Optional[Exception] = None
+
+    for name, fn, is_async in attempts:
+        try:
+            if is_async:
+                result = _run_async_entry(fn, user_input, history)
+            else:
+                result = _call_sync(fn, user_input, history)
+
+            if name not in {"run", "run_async"}:
+                logger.warning("Użyto fallbacku metody agenta: %s", name)
+
+            return result
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            logger.debug("Metoda %s nie powiodła się: %s", name, exc, exc_info=True)
+            continue
+
+    raise RuntimeError("Brak kompatybilnej metody uruchomienia agenta (run/call/start/generate_content)") from last_error
 
 
 class ADKAgent:
@@ -36,18 +124,11 @@ class ADKAgent:
             }
 
     def _run_agent(self, user_input: str, history: Optional[List[Dict[str, str]]]) -> Any:
-        """Wywołuje agenta, tolerując różnice w interfejsie."""
-        if hasattr(self.agent, "run"):
-            try:
-                return self.agent.run(user_input, history=history)  # type: ignore[arg-type]
-            except TypeError:
-                return self.agent.run(user_input)
-        if callable(self.agent):
-            return self.agent(user_input)
-        if hasattr(self.agent, "start"):
-            return self.agent.start(user_input)
-        raise AttributeError("Agent has no callable interface: run/start/__call__")
+        """Wywołuje agenta z fallbackami (run / run_async / __call__ / start / generate_content)."""
 
+        return run_agent_call(self.agent, user_input, history)
+
+    @staticmethod
     def _extract_thoughts(result: Any) -> str:
         """Próbuje wydobyć ślad myślowy z różnych możliwych pól wyniku (priorytet na strukturalne pola ADK/Gemini 3)."""
 
