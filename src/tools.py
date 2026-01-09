@@ -150,14 +150,14 @@ ZASADY:
 def create_agent() -> Agent:
     """Tworzy instancję agenta z wbudowanym plannerem (Gemini 3.x)."""
 
-    cache = get_or_create_cache()
+    # cache = get_or_create_cache()
 
     return Agent(
         model="gemini-3-flash-preview",
         name="analyst_v2_restored",
         location=LOCATION,
         # Użyj cache zamiast instruction string dla optymalizacji kosztów
-        cached_content=cache.name,
+        instruction=RESTORED_SYSTEM_PROMPT,
         tools=[run_sql_query, get_table_schema],
         planner=BuiltInPlanner(
             thinking_config=types.ThinkingConfig(include_thoughts=True)
