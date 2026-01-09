@@ -29,6 +29,8 @@ def get_or_create_cache():
     if cached_content is None:
         try:
             # Próba pobrania istniejącego cache
+            # Uwaga: 'get' zazwyczaj wymaga pełnej nazwy zasobu (cachedContents/...), 
+            # więc przy pierwszym uruchomieniu to rzuci wyjątek, co jest obsługiwane.
             cached_content = genai_client.caches.get(name=CACHE_NAME)
             logger.info("Użyto istniejącego cache kontekstu: %s", CACHE_NAME)
         except Exception:
@@ -58,12 +60,18 @@ def get_or_create_cache():
             SCHEMA:
             {schema_content}
             """
+            
+            # NAPRAWA BŁĘDU: Użycie poprawnego typu CreateCachedContentConfig
             cached_content = genai_client.caches.create(
                 model="gemini-3-flash-preview",
-                contents=[types.Content(parts=[types.Part(text=prompt_content)])],
-                config=types.CacheConfig(name=CACHE_NAME, ttl="3600s")  # 1 godzina TTL
+                config=types.CreateCachedContentConfig(
+                    display_name=CACHE_NAME,
+                    ttl="3600s",  # 1 godzina TTL
+                    contents=[types.Content(parts=[types.Part(text=prompt_content)])]
+                )
             )
-            logger.info("Utworzono nowy cache kontekstu: %s", CACHE_NAME)
+            logger.info("Utworzono nowy cache kontekstu: %s", cached_content.name)
+            
     return cached_content
 
 
