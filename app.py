@@ -15,7 +15,7 @@ st.set_page_config(
 )
 
 # Stylizacja (opcjonalna)
-
+st.markdown(
     """
 <style>
     .stChatMessage { font-family: 'Noto Sans', sans-serif; }
