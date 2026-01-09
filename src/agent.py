@@ -36,14 +36,18 @@ class ADKAgent:
             }
 
     def _run_agent(self, user_input: str, history: Optional[List[Dict[str, str]]]) -> Any:
-        """Wywołuje agenta, tolerując różnice w sygnaturze metody run."""
-        try:
-            return self.agent.run(user_input, history=history)  # type: ignore[arg-type]
-        except TypeError:
-            # Niektóre wersje ADK mogą nie przyjmować historii
-            return self.agent.run(user_input)
+        """Wywołuje agenta, tolerując różnice w interfejsie."""
+        if hasattr(self.agent, "run"):
+            try:
+                return self.agent.run(user_input, history=history)  # type: ignore[arg-type]
+            except TypeError:
+                return self.agent.run(user_input)
+        if callable(self.agent):
+            return self.agent(user_input)
+        if hasattr(self.agent, "start"):
+            return self.agent.start(user_input)
+        raise AttributeError("Agent has no callable interface: run/start/__call__")
 
-    @staticmethod
     def _extract_thoughts(result: Any) -> str:
         """Próbuje wydobyć ślad myślowy z różnych możliwych pól wyniku (priorytet na strukturalne pola ADK/Gemini 3)."""
 
