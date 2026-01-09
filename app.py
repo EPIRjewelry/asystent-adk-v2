@@ -1,51 +1,73 @@
-"""Interfejs Streamlit dla agenta ADK."""
+"""Interfejs Streamlit dopasowany do agenta ADK z BuiltInPlanner (Gemini 3.0)."""
+
+import logging
 
 import streamlit as st
 
-from src.agent import ADKAgent
+from src.tools import create_agent
 
 
-st.set_page_config(page_title="ADK Agent", layout="wide")
-st.title("🤖 Zaawansowany Agent Analityczny ADK")
+# Konfiguracja strony
+st.set_page_config(
+    page_title="ADK Analyst V2 (Gemini 3.0)",
+    page_icon="💎",
+    layout="wide",
+)
 
+# Stylizacja (opcjonalna)
 
-# --- Inicjalizacja stanu ---
+    """
+<style>
+    .stChatMessage { font-family: 'Noto Sans', sans-serif; }
+</style>
+""",
+    unsafe_allow_html=True,
+)
+
+st.title("💎 Asystent Analityczny ADK")
+st.caption("Powered by Gemini 3.0 Pro & BigQuery (Thinking Mode)")
+
+# --- INICJALIZACJA AGENTA (SINGLETON) ---
 if "agent" not in st.session_state:
-    st.session_state.agent = ADKAgent()
+    with st.spinner("Inicjalizacja silnika kognitywnego..."):
+        try:
+            st.session_state.agent = create_agent()
+            st.session_state.chat_history = []
+            st.success("System gotowy.")
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"Błąd krytyczny inicjalizacji: {exc}")
+            st.stop()
 
-if "messages" not in st.session_state:
-    st.session_state.messages = [
-        {"role": "assistant", "content": "Cześć! Jestem gotów do analizy danych. W czym mogę pomóc?"}
-    ]
+# --- WYŚWIETLANIE HISTORII ---
+for msg in st.session_state.get("chat_history", []):
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
 
 
-# --- Wyświetlanie historii czatu ---
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-
-
-# --- Obsługa nowej wiadomości ---
-if prompt := st.chat_input("Zadaj pytanie analityczne..."):
-    # 1. Dodaj wiadomość użytkownika
-    st.session_state.messages.append({"role": "user", "content": prompt})
+# --- PĘTLA INTERAKCJI ---
+if user_input := st.chat_input("Zadaj pytanie o dane..."):
+    # 1. Wyświetl pytanie użytkownika
+    st.session_state.chat_history.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
-        st.markdown(prompt)
+        st.markdown(user_input)
 
-    # 2. Odpowiedź agenta
+    # 2. Pobierz odpowiedź agenta
     with st.chat_message("assistant"):
-        with st.spinner("Agent analizuje Twoje pytanie..."):
-            history_for_agent = [
-                {"role": msg["role"], "content": msg["content"]}
-                for msg in st.session_state.messages
-            ]
+        message_placeholder = st.empty()
+        with st.spinner("Analizuję dane (Thinking Process)..."):
+            try:
+                # ADK Agent zarządza kontekstem i thought_signature automatycznie
+                response = st.session_state.agent.run(user_input)
 
-            result = st.session_state.agent.run_turn(user_input=prompt, history=history_for_agent)
-            response_text = result.get("response", "Brak odpowiedzi")
+                full_response = getattr(response, "text", None) or str(response)
+                message_placeholder.markdown(full_response)
 
-            st.markdown(response_text)
-            with st.expander("Zobacz proces myślowy agenta (Thinking Trace)"):
-                st.text(result.get("thinking_trace", "Brak"))
+                # Zapisz odpowiedź do historii wyświetlania
+                st.session_state.chat_history.append(
+                    {"role": "assistant", "content": full_response}
+                )
 
-    # 3. Zapisz odpowiedź do historii
-    st.session_state.messages.append({"role": "assistant", "content": response_text})
+            except Exception as exc:  # noqa: BLE001
+                error_msg = f"⚠️ Wystąpił błąd procesu myślowego: {exc}"
+                message_placeholder.error(error_msg)
+                logging.error("Streamlit Error: %s", exc)

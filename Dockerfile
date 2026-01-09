@@ -1,37 +1,36 @@
-# --- Etap 1: Budowa zależności (cache layer)
-FROM python:3.11-slim AS builder
-
-# Instalacja narzędzi systemowych i zależności buildowych
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential gcc && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /build
-
-# Kopiujemy tylko requirements, żeby wykorzystać cache
-COPY requirements.txt ./
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir --prefix=/install -r requirements.txt
-
-# --- Etap 2: Finalny obraz uruchomieniowy ---
+# Używamy lekkiego obrazu Pythona
 FROM python:3.11-slim
 
-# Tworzymy użytkownika non-root
-RUN useradd -m -u 1000 adkuser
+# Ustawienie katalogu roboczego
 WORKDIR /app
 
-# Kopiujemy zależności z buildera i kod aplikacji
-COPY --from=builder /install /usr/local
-COPY --chown=adkuser:adkuser . .
+# Instalacja zależności systemowych (jeśli potrzebne)
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    curl \
+    software-properties-common \
+    git \
+    && rm -rf /var/lib/apt/lists/*
 
-# Ustawiamy zmienne środowiskowe dla Pythona
-ENV PYTHONUNBUFFERED=1
-ENV PORT=8080
+# Kopiowanie plików wymagań
+COPY requirements.txt .
 
-# Przełączamy się na użytkownika non-root
-USER adkuser
+# Instalacja zależności Pythona
+RUN pip3 install -r requirements.txt
 
-# Expose port (informacyjny)
+# Kopiowanie kodu aplikacji
+COPY . .
+
+# Ekspozycja portu (wymagane przez Cloud Run)
 EXPOSE 8080
 
-# CMD: uruchamiamy aplikację Streamlit z dynamicznym portem z Cloud Run
-CMD streamlit run app.py --server.port=${PORT} --server.address=0.0.0.0
+# Zmienna środowiskowa dla Streamlit
+ENV STREAMLIT_SERVER_PORT=8080
+ENV STREAMLIT_SERVER_ADDRESS=0.0.0.0
+
+# Healthcheck (opcjonalny, ale zalecany dla Cloud Run)
+HEALTHCHECK CMD curl --fail http://localhost:8080/_stcore/health
+
+# --- ZMIANA KRYTYCZNA TUTAJ ---
+# Uruchomienie aplikacji (zmieniono na app.py)
+ENTRYPOINT ["streamlit", "run", "app.py", "--server.port=8080", "--server.address=0.0.0.0"]
