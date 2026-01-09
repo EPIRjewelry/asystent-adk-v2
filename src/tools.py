@@ -67,7 +67,7 @@ def get_or_create_cache():
                 config=types.CreateCachedContentConfig(
                     display_name=CACHE_NAME,
                     ttl="3600s",  # 1 godzina TTL
-                    contents=[types.Content(parts=[types.Part(text=prompt_content)])]
+                    contents=[types.Content(role="user", parts=[types.Part(text=prompt_content)])]
                 )
             )
             logger.info("Utworzono nowy cache kontekstu: %s", cached_content.name)

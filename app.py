@@ -64,7 +64,7 @@ if user_input := st.chat_input("Zadaj pytanie o dane..."):
 
                 # Zapisz odpowiedź do historii wyświetlania
                 st.session_state.chat_history.append(
-                    {"role": "assistant", "content": full_response}
+                    {"role": "model", "content": full_response}
                 )
 
             except Exception as exc:  # noqa: BLE001
