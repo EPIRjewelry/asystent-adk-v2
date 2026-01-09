@@ -2,33 +2,27 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
+from google.api_core.exceptions import GoogleAPICallError
 from google.cloud import bigquery
-from google.ai.generativelanguage import (
-    FunctionDeclaration,
-    Schema,
-    Tool,
-    Type,
-)
-from google.generativeai import types
-import pandas as pd
+from google.genai import types
+from src.utils import logger
 
-# Deklaracja narzędzia dla funkcji SQL
-tool_schema = Tool(
+
+# --- DEFINICJA NARZĘDZIA (SCHEMA) ---
+tool_schema = types.Tool(
     function_declarations=[
-        FunctionDeclaration(
+        types.FunctionDeclaration(
             name="execute_sql",
-            description=(
-                "Wykonuje zapytanie SELECT do BigQuery w celu uzyskania danych z tabeli "
-                "analytics_435783047.events_raw."
-            ),
-            parameters=Schema(
-                type=Type.OBJECT,
+            description="Wykonywanie zapytań SQL (BigQuery) w trybie READ-ONLY. Zwraca wyniki lub komunikat błędu.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
                 properties={
-                    "sql_query": Schema(
-                        type=Type.STRING,
-                        description="Poprawne zapytanie SQL",
+                    "sql_query": types.Schema(
+                        type=types.Type.STRING,
+                        description="Poprawne zapytanie SQL. Musi używać pełnych nazw tabel (projekt.dataset.tabela).",
                     )
                 },
                 required=["sql_query"],
@@ -39,36 +33,76 @@ tool_schema = Tool(
 
 
 class BigQueryTool:
-    """Narzędzie do bezpiecznego wykonywania zapytań SELECT w BigQuery."""
+    """Narzędzie do bezpiecznego wykonywania zapytań SELECT w BigQuery (z logowaniem i walidacją)."""
 
     def __init__(self) -> None:
-        self.client = bigquery.Client()
+        project_id = os.getenv("GOOGLE_CLOUD_PROJECT", "epir-adk-agent-v2-48a86e6f")
+        self.client = bigquery.Client(project=project_id)
 
-    def execute(self, sql: str) -> str:
-        """Wykonuje zapytanie SQL ograniczone do SELECT.
+    def execute(self, sql_query: str) -> str:
+        """Wykonuje zapytanie SQL i zwraca wynik w formacie tekstowym lub komunikat o błędzie."""
 
-        Args:
-            sql: Treść zapytania SQL.
+        clean_query = sql_query.replace("```sql", "").replace("```", "").strip()
+        upper_sql = clean_query.upper()
 
-        Returns:
-            Wynik zapytania jako tekst (tabela lub komunikat o błędzie).
-        """
+        logger.info("BQ execute request: len=%d, preview=%s", len(clean_query), clean_query[:200])
+
+        forbidden_keywords = ["DROP", "DELETE", "UPDATE", "INSERT", "ALTER", "TRUNCATE"]
+        if any(keyword in upper_sql for keyword in forbidden_keywords):
+            logger.warning("Blokowane zapytanie z zabronionym słowem: %s", upper_sql[:120])
+            return "BŁĄD BEZPIECZEŃSTWA: Wykryto próbę modyfikacji danych. Dozwolony jest tylko SELECT."
+
+        if not (upper_sql.startswith("SELECT") or upper_sql.startswith("WITH")):
+            logger.warning("Nieprawidłowy początek zapytania: %s", upper_sql[:60])
+            return "Błąd: Dozwolone są tylko zapytania rozpoczynające się od SELECT lub WITH (CTE)."
+
+        # --- WALIDACJA DRY RUN ---
         try:
-            upper_sql = sql.strip().upper()
-            forbidden_keywords = ("DROP", "DELETE", "UPDATE", "INSERT", "ALTER", "TRUNCATE")
+            job_config = bigquery.QueryJobConfig(dry_run=True, use_query_cache=False)
+            self.client.query(clean_query, job_config=job_config)
+        except Exception as e:
+            logger.warning("Dry run failed: %s", e)
+            return f"BŁĄD SKŁADNI SQL (Dry Run): {e}"
 
-            if any(keyword in upper_sql for keyword in forbidden_keywords):
-                return "Błąd: Zapytanie zawiera niedozwolone komendy modyfikujące dane."
+        try:
+            query_job = self.client.query(clean_query)
+            results = query_job.result()
 
-            if not (upper_sql.startswith("SELECT") or upper_sql.startswith("WITH")):
-                return "Błąd: Dozwolone są tylko zapytania rozpoczynające się od SELECT lub WITH (CTE)."
+            if not results.schema:
+                return "Zapytanie wykonane poprawnie, ale nie zwróciło schematu (pusty wynik?)."
 
-            query_job = self.client.query(sql)
-            results_df: pd.DataFrame = query_job.to_dataframe()
+            headers = [field.name for field in results.schema]
+            rows = []
+            for i, row in enumerate(results):
+                if i >= 20:
+                    break
+                row_values = [str(val) if val is not None else "NULL" for val in row]
+                rows.append(" | ".join(row_values))
 
-            if results_df.empty:
-                return "Zapytanie wykonane poprawnie, ale nie zwróciło żadnych wyników."
+            if not rows:
+                logger.info("Zapytanie zwróciło pusty zestaw danych.")
+                return f"Schemat: {', '.join(headers)}\n(Brak danych spełniających kryteria)"
 
-            return results_df.to_string(index=False)
-        except Exception as e:  # noqa: BLE001
-            return f"Błąd wykonania zapytania: {e}"
+            output = f"Kolumny: {', '.join(headers)}\n"
+            output += "\n".join(rows)
+            return output
+
+        except (GoogleAPICallError, Exception) as e:  # noqa: BLE001
+            logger.error("Błąd podczas wykonania zapytania BigQuery: %s", e, exc_info=True)
+            error_msg = str(e)
+            if "isinstance" in error_msg and "must be a type" in error_msg:
+                return (
+                    "BŁĄD WEWNĘTRZNY NARZĘDZIA (Critical TypeError): "
+                    f"{error_msg}. Narzędzie jest uszkodzone. Przejdź do procedury awaryjnej: poproś użytkownika o schemat."
+                )
+            return f"BŁĄD WYKONANIA SQL: {error_msg}"
+
+
+# Instancja narzędzia
+_bq_tool = BigQueryTool()
+
+
+def execute_sql(sql_query: str) -> str:
+    """Wykonuje zapytanie SELECT do BigQuery w trybie READ-ONLY."""
+    return _bq_tool.execute(sql_query)
+
