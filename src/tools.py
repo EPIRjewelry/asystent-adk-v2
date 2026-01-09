@@ -156,6 +156,7 @@ def create_agent() -> Agent:
         model="gemini-3-flash-preview",
         name="analyst_v2_restored",
         location=LOCATION,
+        config=types.GenerateContentConfig(temperature=0.0),
         # Użyj cache zamiast instruction string dla optymalizacji kosztów
         instruction=RESTORED_SYSTEM_PROMPT,
         tools=[run_sql_query, get_table_schema],
